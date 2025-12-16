@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { X, Loader2, Barcode, AlertTriangle, Lock, Settings, CheckCircle2, RefreshCcw } from 'lucide-react';
+import { X, Loader2, Barcode, AlertTriangle, Lock, Settings, CheckCircle2, RefreshCcw, Camera, ImagePlus } from 'lucide-react';
 import { Button } from './Button';
 import { ScanMode } from '../types';
 import { BrowserMultiFormatReader, NotFoundException } from '@zxing/library';
@@ -13,11 +13,13 @@ interface ScannerViewProps {
 export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const codeReader = useRef<BrowserMultiFormatReader | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   
   const [loading, setLoading] = useState(true);
   const [errorState, setErrorState] = useState<{ type: 'permission' | 'device' | 'generic', message: string } | null>(null);
   const [lastScanned, setLastScanned] = useState<string | null>(null);
   const [manualCode, setManualCode] = useState('');
+  const [isProcessingImage, setIsProcessingImage] = useState(false);
 
   // Ses oynatma
   const playBeep = () => {
@@ -39,52 +41,51 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
           audioContext.close();
       }, 100);
     } catch (e) {
-      console.error("Ses çalınamadı", e);
+      // Ses hatası önemsiz
     }
   };
+
+  const handleSuccessScan = useCallback((code: string) => {
+    setLastScanned(code);
+    playBeep();
+    
+    if (navigator.vibrate) navigator.vibrate(200);
+
+    onScan(code);
+
+    setTimeout(() => {
+       setLastScanned(null);
+    }, 2500);
+  }, [onScan]);
 
   const startScanner = useCallback(async () => {
     setLoading(true);
     setErrorState(null);
 
-    // 1. ZXing Okuyucuyu Hazırla
     if (!codeReader.current) {
       codeReader.current = new BrowserMultiFormatReader();
     }
 
     try {
-      // 2. Video elementini bekle
-      if (!videoRef.current) {
-        console.error("Video elementi bulunamadı");
-        return;
-      }
+      if (!videoRef.current) return;
 
-      // 3. Kamerayı başlat ve taramaya başla
-      // decodeFromVideoDevice metodunu kullanıyoruz, bu hem stream'i açar hem de decode eder.
-      // undefined vererek varsayılan arka kamerayı seçmesini istiyoruz.
+      // Canlı yayın denemesi
       await codeReader.current.decodeFromConstraints(
         {
           audio: false,
           video: {
-            facingMode: 'environment', // Arka kamera önceliği
+            facingMode: 'environment',
             width: { min: 640, ideal: 1280 },
             height: { min: 480, ideal: 720 }
           }
         },
         videoRef.current,
         (result, err) => {
-          // Tarama sonucu varsa
           if (result) {
             const code = result.getText();
-            // Debounce: Aynı kodu üst üste çok hızlı okumasın
             if (code !== lastScanned) {
                handleSuccessScan(code);
             }
-          }
-          // Hata varsa (genellikle "bulunamadı" hatası sürekli döner, bunu yoksayıyoruz)
-          if (err && !(err instanceof NotFoundException)) {
-            // Ciddi hata
-            console.warn("Tarama hatası:", err);
           }
         }
       );
@@ -92,59 +93,82 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
       setLoading(false);
 
     } catch (err: any) {
-      console.error("Kamera başlatılamadı:", err);
+      console.error("Canlı kamera hatası:", err);
       setLoading(false);
       
-      let message = "Kamera başlatılamadı.";
+      // Hata olsa bile kullanıcıya "Fotoğraf Çek" seçeneği sunacağımız için
+      // durumu özel bir hata mesajıyla yönetelim.
+      let message = "Canlı kamera başlatılamadı.";
       let type: 'permission' | 'device' | 'generic' = 'generic';
 
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        message = "Kamera izni reddedildi.";
+        message = "Canlı kamera izni reddedildi.";
         type = 'permission';
       } else if (err.name === 'NotFoundError') {
         message = "Kamera bulunamadı.";
         type = 'device';
-      } else if (window.location.protocol === 'http:' && window.location.hostname !== 'localhost') {
-        message = "Güvenlik nedeniyle HTTP üzerinden kamera açılamaz. Lütfen HTTPS kullanın.";
       } else {
-        message = `Hata: ${err.message || err}`;
+        message = `Uygulama içi kamera açılamadı. Lütfen aşağıdaki 'Fotoğraf Çek' butonunu kullanın.`;
       }
       
       setErrorState({ type, message });
     }
-  }, [lastScanned]);
+  }, [lastScanned, handleSuccessScan]);
 
-  const handleSuccessScan = (code: string) => {
-    // Ekranda göster
-    setLastScanned(code);
-    playBeep();
-    
-    // Titreşim
-    if (navigator.vibrate) navigator.vibrate(200);
+  // Fotoğraf yükleme/çekme işleyicisi (Yedek Yöntem)
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
 
-    // Üst bileşene bildir
-    onScan(code);
+    const file = e.target.files[0];
+    setIsProcessingImage(true);
+    setLoading(true);
 
-    // 2.5 saniye sonra ekrandaki "Okundu" yazısını kaldır
-    setTimeout(() => {
-       setLastScanned(null);
-    }, 2500);
+    if (!codeReader.current) {
+      codeReader.current = new BrowserMultiFormatReader();
+    }
+
+    try {
+      // Resmi URL'ye çevir
+      const imageUrl = URL.createObjectURL(file);
+      
+      // ZXing ile resimden okumayı dene
+      const result = await codeReader.current.decodeFromImageUrl(imageUrl);
+      
+      if (result) {
+        handleSuccessScan(result.getText());
+        // Başarılı olursa hata ekranını temizle (eğer varsa)
+        setErrorState(null); 
+      }
+      
+      URL.revokeObjectURL(imageUrl);
+    } catch (err) {
+      alert("Bu fotoğrafta barkod bulunamadı. Lütfen barkodun net çıktığından emin olun ve tekrar deneyin.");
+    } finally {
+      setIsProcessingImage(false);
+      setLoading(false);
+      // Inputu temizle ki aynı dosyayı tekrar seçebilsin
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const triggerNativeCamera = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
   };
 
   useEffect(() => {
-    // Component mount olduğunda başlat
     let timeout = setTimeout(() => {
        startScanner();
-    }, 500); // DOM'un tam oturması için kısa bir gecikme
+    }, 500);
 
     return () => {
       clearTimeout(timeout);
-      // Temizlik: Kamerayı durdur
       if (codeReader.current) {
         codeReader.current.reset();
       }
     };
-  }, []);
+  }, [startScanner]);
 
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -154,45 +178,51 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
     }
   };
 
-  // Hata ekranı render fonksiyonu
-  const renderError = () => (
-    <div className="flex flex-col items-center p-6 text-center max-w-sm w-full">
-      <div className="w-16 h-16 bg-red-900/30 rounded-full flex items-center justify-center mb-4 text-red-500 border border-red-900">
-        <AlertTriangle size={32} />
+  // Hata veya Alternatif Mod Ekranı
+  const renderFallbackMode = () => (
+    <div className="flex flex-col items-center p-6 text-center max-w-sm w-full animate-in fade-in zoom-in duration-300">
+      <div className="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center mb-6 border-2 border-slate-600 shadow-xl">
+        <Camera size={40} className="text-blue-400" />
       </div>
-      <h3 className="text-white font-bold text-lg mb-2">Kamera Sorunu</h3>
       
-      {errorState?.type === 'permission' ? (
-        <div className="bg-slate-800/80 p-4 rounded-lg text-left text-sm text-slate-300 mb-6 border border-slate-700 w-full">
-            <p className="mb-3 font-semibold text-white">İzin Vermek İçin:</p>
-            <div className="flex items-start gap-3 mb-3">
-                <Lock className="w-5 h-5 text-blue-400 mt-0.5" />
-                <div>Tarayıcı adres çubuğundaki kilit simgesine tıklayın.</div>
-            </div>
-            <div className="flex items-start gap-3">
-                <Settings className="w-5 h-5 text-green-400 mt-0.5" />
-                <div>"Kamera" iznini aktif hale getirin ve sayfayı yenileyin.</div>
-            </div>
-        </div>
-      ) : (
-        <p className="text-slate-300 text-sm mb-6 bg-red-950/50 p-3 rounded border border-red-900/30">
-          {errorState?.message}
-        </p>
-      )}
+      <h3 className="text-white font-bold text-xl mb-2">Canlı Kamera Açılamadı</h3>
+      
+      <p className="text-slate-400 text-sm mb-8 leading-relaxed">
+        Uygulama izinleri veya cihaz uyumluluğu nedeniyle canlı tarama yapılamıyor. Sorun değil, fotoğraf çekerek devam edebilirsiniz.
+      </p>
 
-      <div className="flex flex-col gap-3 w-full">
-        <Button onClick={() => window.location.reload()} variant="primary" fullWidth icon={<RefreshCcw size={18} />}>
-            Sayfayı Yenile
-        </Button>
-        <Button onClick={onClose} variant="secondary" fullWidth>
-            Kapat
-        </Button>
+      <Button 
+        onClick={triggerNativeCamera} 
+        variant="primary" 
+        fullWidth 
+        className="mb-4 py-4 text-lg shadow-blue-500/20"
+        icon={isProcessingImage ? <Loader2 className="animate-spin"/> : <Camera size={24} />}
+      >
+        {isProcessingImage ? 'İşleniyor...' : 'Fotoğraf Çek / Yükle'}
+      </Button>
+
+      <Button onClick={onClose} variant="secondary" fullWidth>
+        İptal
+      </Button>
+      
+      <div className="mt-4 text-xs text-slate-500">
+        <p>İpucu: Barkodun net ve aydınlık olduğundan emin olun.</p>
       </div>
     </div>
   );
 
   return (
     <div className="fixed inset-0 bg-black z-50 flex flex-col">
+      {/* Gizli Dosya Inputu (Native Kamera için köprü) */}
+      <input 
+        type="file" 
+        accept="image/*" 
+        capture="environment" 
+        ref={fileInputRef} 
+        onChange={handleFileUpload} 
+        className="hidden" 
+      />
+
       {/* Üst Bar */}
       <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 bg-gradient-to-b from-black/80 to-transparent">
         <div className="bg-black/40 backdrop-blur-sm px-3 py-1 rounded-full border border-white/10">
@@ -205,9 +235,10 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
         </button>
       </div>
 
-      {/* Kamera Alanı */}
+      {/* Ana Görünüm Alanı */}
       <div className="flex-1 relative flex flex-col items-center justify-center overflow-hidden bg-slate-900">
-        {/* Video Elementi: Her zaman DOM'da olmalı ki kütüphane bağlanabilsin */}
+        
+        {/* Video (Varsa göster, yoksa gizle ama DOM'da kalsın) */}
         <video 
             ref={videoRef}
             className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-500 ${loading || errorState ? 'opacity-0' : 'opacity-100'}`}
@@ -215,39 +246,57 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
             muted
         />
 
-        {/* Yükleniyor Göstergesi */}
-        {loading && !errorState && (
+        {/* Yükleniyor */}
+        {loading && !isProcessingImage && !errorState && (
            <div className="z-30 flex flex-col items-center">
              <Loader2 className="w-12 h-12 text-blue-500 animate-spin mb-4" />
              <p className="text-slate-400 font-medium">Kamera Başlatılıyor...</p>
            </div>
         )}
 
-        {/* Hata Ekranı */}
+        {/* Fotoğraf İşleniyor */}
+        {isProcessingImage && (
+           <div className="z-50 absolute inset-0 bg-black/80 flex flex-col items-center justify-center backdrop-blur">
+             <Loader2 className="w-16 h-16 text-blue-500 animate-spin mb-4" />
+             <h3 className="text-xl text-white font-bold">Barkod Analiz Ediliyor...</h3>
+           </div>
+        )}
+
+        {/* Hata Durumu (Fallback Modu) */}
         {errorState && (
-            <div className="z-30 bg-slate-900/95 absolute inset-0 flex items-center justify-center">
-                {renderError()}
+            <div className="z-30 bg-slate-900 absolute inset-0 flex items-center justify-center">
+                {renderFallbackMode()}
             </div>
         )}
 
-        {/* Tarama Arayüzü (Kamera aktifken) */}
-        {!loading && !errorState && (
+        {/* Canlı Tarama Arayüzü (Her şey yolundaysa) */}
+        {!loading && !errorState && !isProcessingImage && (
             <>
                 <div className="relative z-10 w-72 h-48 border-2 border-blue-500/50 rounded-lg shadow-[0_0_0_9999px_rgba(0,0,0,0.7)] overflow-hidden">
                     <div className="absolute top-0 left-0 right-0 h-0.5 bg-red-500 shadow-[0_0_20px_rgba(239,68,68,1)] animate-[scan_2s_ease-in-out_infinite]"></div>
-                    {/* Köşeler */}
                     <div className="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-blue-500"></div>
                     <div className="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-blue-500"></div>
                     <div className="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-blue-500"></div>
                     <div className="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-blue-500"></div>
                 </div>
-                <p className="relative z-10 mt-6 text-white/80 text-sm font-medium bg-black/50 px-4 py-1 rounded-full backdrop-blur">
-                    Barkodu okutun
-                </p>
+                
+                <div className="relative z-10 mt-6 flex flex-col items-center gap-3">
+                    <p className="text-white/80 text-sm font-medium bg-black/50 px-4 py-1 rounded-full backdrop-blur">
+                        Barkodu okutun
+                    </p>
+                    {/* Canlı modda bile fotoğraf çekme opsiyonu verelim */}
+                    <button 
+                      onClick={triggerNativeCamera}
+                      className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-full text-white text-xs transition-colors border border-white/20"
+                    >
+                      <ImagePlus size={16} />
+                      Okumuyor mu? Fotoğraf Çek
+                    </button>
+                </div>
             </>
         )}
 
-        {/* Başarılı Okuma Bildirimi */}
+        {/* Başarılı Okuma Pop-up */}
         {lastScanned && (
             <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
                 <div className="bg-white p-6 rounded-2xl flex flex-col items-center shadow-2xl transform scale-110">
@@ -272,7 +321,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
                type="text"
                value={manualCode}
                onChange={(e) => setManualCode(e.target.value)}
-               placeholder="Okumuyorsa elle girin..."
+               placeholder="Barkod girin..."
                className="block w-full pl-10 pr-3 py-3 border border-slate-700 rounded-lg leading-5 bg-slate-800 text-slate-100 placeholder-slate-500 focus:outline-none focus:bg-slate-700 focus:border-blue-500"
                inputMode="numeric"
              />
