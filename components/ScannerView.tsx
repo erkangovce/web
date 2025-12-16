@@ -31,9 +31,10 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
     }
 
     try {
-      // Önce arka kamerayı dene
+      // Sadece video iste, ses (audio) false yaparak izin sürecini kolaylaştır
       const mediaStream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: 'environment' } 
+        video: { facingMode: 'environment' },
+        audio: false 
       });
       handleStream(mediaStream);
     } catch (err) {
@@ -41,16 +42,19 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
       try {
         // Hata verirse herhangi bir video kaynağını dene
         const fallbackStream = await navigator.mediaDevices.getUserMedia({ 
-          video: true 
+          video: true,
+          audio: false
         });
         handleStream(fallbackStream);
       } catch (finalErr: any) {
         console.error("Kamera erişimi reddedildi:", finalErr);
         setPermissionError(true);
         if (finalErr.name === 'NotAllowedError' || finalErr.name === 'PermissionDeniedError') {
-            setErrorMessage("Kamera izni reddedildi. Lütfen tarayıcı ayarlarından izin verin.");
+            setErrorMessage("Kamera izni reddedildi. Lütfen tarayıcı ayarlarından siteye kamera izni verin.");
         } else if (finalErr.name === 'NotFoundError') {
             setErrorMessage("Kamera bulunamadı.");
+        } else if (finalErr.name === 'NotReadableError') {
+            setErrorMessage("Kamera şu anda başka bir uygulama tarafından kullanılıyor olabilir.");
         } else {
             setErrorMessage("Kamera başlatılamadı: " + (finalErr.message || "Bilinmeyen hata"));
         }

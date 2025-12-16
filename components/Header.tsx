@@ -8,7 +8,7 @@ interface HeaderProps {
   showBack?: boolean;
 }
 
-export const Header: React.FC<HeaderProps> = ({ title = "BarcodeLink", onBack, onSettings, showBack }) => {
+export const Header: React.FC<HeaderProps> = ({ title = "BarkodLink Pro", onBack, onSettings, showBack }) => {
   return (
     <div className="h-16 bg-slate-900/80 backdrop-blur-md border-b border-slate-800 flex items-center justify-between px-4 sticky top-0 z-50">
       <div className="flex items-center gap-3">

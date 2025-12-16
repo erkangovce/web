@@ -1,7 +1,9 @@
 {
-  "name": "barkod okuyucu",
-  "description": "A professional barcode scanning utility with network path configuration, single and series scanning modes, and offline storage capabilities.",
+  "name": "BarkodLink Pro",
+  "description": "Ağ yolu yapılandırması, tekli ve seri tarama modları ve çevrimdışı depolama özelliklerine sahip profesyonel bir barkod tarama aracı.",
   "requestFramePermissions": [
-    "camera"
+    "camera",
+    "microphone",
+    "geolocation"
   ]
 }
