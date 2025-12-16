@@ -1,0 +1,7 @@
+{
+  "name": "barkod okuyucu",
+  "description": "A professional barcode scanning utility with network path configuration, single and series scanning modes, and offline storage capabilities.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
