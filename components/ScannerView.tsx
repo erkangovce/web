@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Camera, X, Zap, Loader2, Barcode, RefreshCcw, AlertTriangle } from 'lucide-react';
+import { Camera, X, Loader2, Barcode, RefreshCcw, AlertTriangle, Lock, Settings, Globe } from 'lucide-react';
 import { Button } from './Button';
 import { ScanMode } from '../types';
 
@@ -13,6 +13,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
   const videoRef = useRef<HTMLVideoElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [permissionError, setPermissionError] = useState(false);
+  const [permissionDenied, setPermissionDenied] = useState(false); // Kullanıcı açıkça reddetti mi?
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [manualCode, setManualCode] = useState('');
   const [lastScanned, setLastScanned] = useState<string | null>(null);
@@ -22,6 +23,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
   const startCamera = async () => {
     setLoading(true);
     setPermissionError(false);
+    setPermissionDenied(false);
     setErrorMessage('');
 
     // Güvenli bağlam kontrolü (HTTPS veya localhost)
@@ -59,7 +61,8 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
         let msg = "Kamera başlatılamadı.";
         
         if (finalErr.name === 'NotAllowedError' || finalErr.name === 'PermissionDeniedError') {
-            msg = "Kamera izni reddedildi. Lütfen tarayıcı ayarlarından izin verin.";
+            msg = "Kamera izni reddedildi.";
+            setPermissionDenied(true);
         } else if (finalErr.name === 'NotFoundError') {
             msg = "Kamera cihazı bulunamadı.";
         } else if (finalErr.name === 'NotReadableError') {
@@ -79,8 +82,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
   const handleStream = (mediaStream: MediaStream) => {
     setStream(mediaStream);
     setLoading(false); 
-    // Not: videoRef.current burada null olabilir çünkü loading true iken video render edilmiyor.
-    // Stream ataması useEffect içinde yapılacak.
   };
 
   // Stream ve Video Element Eşleşmesi
@@ -180,7 +181,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
             )}
           </>
         ) : (
-          <div className="flex flex-col items-center p-6 text-center max-w-sm px-8">
+          <div className="flex flex-col items-center p-6 text-center max-w-sm px-4 w-full overflow-y-auto max-h-[80vh]">
             {loading ? (
                <>
                  <Loader2 className="w-12 h-12 text-blue-500 animate-spin mb-4" />
@@ -189,16 +190,45 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
                </>
             ) : (
                 <>
-                    <div className="w-16 h-16 bg-red-900/30 rounded-full flex items-center justify-center mb-4 text-red-500 border border-red-900">
+                    <div className="w-16 h-16 bg-red-900/30 rounded-full flex items-center justify-center mb-4 text-red-500 border border-red-900 shrink-0">
                       <AlertTriangle size={32} />
                     </div>
-                    <h3 className="text-white font-bold text-lg mb-2">Kamera Hatası</h3>
-                    <p className="text-slate-300 text-sm mb-6 leading-relaxed">
-                      {errorMessage}
-                    </p>
+                    <h3 className="text-white font-bold text-lg mb-2">Kamera İzni Gerekli</h3>
+                    
+                    {permissionDenied ? (
+                        <div className="bg-slate-800/80 p-4 rounded-lg text-left text-sm text-slate-300 mb-6 border border-slate-700 w-full">
+                            <p className="mb-3 font-semibold text-white">İzin nasıl açılır?</p>
+                            
+                            <div className="flex items-start gap-3 mb-3">
+                                <Lock className="w-5 h-5 text-blue-400 mt-0.5" />
+                                <div>
+                                    <span className="text-white">Adım 1:</span> Adres çubuğundaki (URL) <span className="text-blue-400 font-bold">Kilit</span> veya <span className="text-blue-400 font-bold">Ayarlar</span> simgesine tıklayın.
+                                </div>
+                            </div>
+                            
+                            <div className="flex items-start gap-3 mb-3">
+                                <Settings className="w-5 h-5 text-blue-400 mt-0.5" />
+                                <div>
+                                    <span className="text-white">Adım 2:</span> "İzinler" veya "Site Ayarları" kısmından <span className="text-green-400 font-bold">Kamera</span>'yı bulup "İzin Ver" (Allow) seçin.
+                                </div>
+                            </div>
+
+                            <div className="flex items-start gap-3">
+                                <Globe className="w-5 h-5 text-blue-400 mt-0.5" />
+                                <div>
+                                    <span className="text-white">Adım 3:</span> Sayfayı yenileyin veya "Tekrar Dene" butonuna basın.
+                                </div>
+                            </div>
+                        </div>
+                    ) : (
+                        <p className="text-slate-300 text-sm mb-6 leading-relaxed">
+                          {errorMessage}
+                        </p>
+                    )}
+
                     <div className="space-y-3 w-full">
-                      <Button onClick={() => startCamera()} variant="primary" fullWidth icon={<RefreshCcw size={18} />}>
-                          Tekrar Dene
+                      <Button onClick={() => window.location.reload()} variant="primary" fullWidth icon={<RefreshCcw size={18} />}>
+                          Sayfayı Yenile
                       </Button>
                       <Button onClick={onClose} variant="secondary" fullWidth>
                           İptal
@@ -223,7 +253,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
                onChange={(e) => setManualCode(e.target.value)}
                placeholder="Barkodu manuel girin..."
                className="block w-full pl-10 pr-3 py-3 border border-slate-700 rounded-lg leading-5 bg-slate-800 text-slate-100 placeholder-slate-500 focus:outline-none focus:bg-slate-700 focus:border-blue-500 transition-colors"
-               autoFocus={false} // Mobilde klavye otomatik açılmasın diye false yaptım
+               autoFocus={false} 
              />
            </div>
            <Button type="submit" variant="secondary" className="px-6">
