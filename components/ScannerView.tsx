@@ -1,7 +1,14 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Camera, X, Loader2, Barcode, RefreshCcw, AlertTriangle, Lock, Settings, Globe } from 'lucide-react';
+import { Camera, X, Loader2, Barcode, RefreshCcw, AlertTriangle, Lock, Settings, Globe, Zap, CheckCircle2 } from 'lucide-react';
 import { Button } from './Button';
 import { ScanMode } from '../types';
+
+// TypeScript için BarcodeDetector tanımı (Tarayıcıda native olarak varsa)
+declare global {
+  interface Window {
+    BarcodeDetector: any;
+  }
+}
 
 interface ScannerViewProps {
   mode: ScanMode;
@@ -13,137 +20,222 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
   const videoRef = useRef<HTMLVideoElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [permissionError, setPermissionError] = useState(false);
-  const [permissionDenied, setPermissionDenied] = useState(false); // Kullanıcı açıkça reddetti mi?
+  const [permissionDenied, setPermissionDenied] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [manualCode, setManualCode] = useState('');
   const [lastScanned, setLastScanned] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isSupported, setIsSupported] = useState(true);
+  const [torchEnabled, setTorchEnabled] = useState(false);
+  const scanInterval = useRef<any>(null);
 
-  // Kamerayı başlatma fonksiyonu
+  // Ses efekti için
+  const playBeep = () => {
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(1000, audioContext.currentTime);
+    gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+
+    oscillator.start();
+    setTimeout(() => {
+        oscillator.stop();
+        audioContext.close();
+    }, 100);
+  };
+
   const startCamera = async () => {
     setLoading(true);
     setPermissionError(false);
     setPermissionDenied(false);
     setErrorMessage('');
 
-    // Güvenli bağlam kontrolü (HTTPS veya localhost)
+    // Güvenli bağlam kontrolü
     if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-       console.warn("Güvenli olmayan bağlam (HTTP) tespit edildi. Kamera çalışmayabilir.");
+       console.warn("Güvenli olmayan bağlam (HTTP).");
+    }
+
+    // BarcodeDetector Desteği Kontrolü
+    if (!('BarcodeDetector' in window)) {
+       console.warn("Barcode Detector API desteklenmiyor.");
+       setIsSupported(false);
+       // Kamera yine de açılır ama otomatik okumaz
     }
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setPermissionError(true);
-      setErrorMessage("Tarayıcınız kamera erişimini desteklemiyor veya güvenli olmayan bir bağlantı (HTTP) kullanıyorsunuz. Lütfen HTTPS kullanın.");
+      setErrorMessage("Tarayıcı kamera API'sini desteklemiyor. Lütfen Chrome (Android) veya Safari (iOS) güncel sürüm kullanın.");
       setLoading(false);
       return;
     }
 
     try {
-      // Önce arka kamerayı dene
-      const mediaStream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: 'environment' },
-        audio: false 
-      });
+      const constraints = {
+        video: {
+            facingMode: 'environment', // Arka kamera
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            focusMode: 'continuous' // Otomatik odaklama (destekleniyorsa)
+        },
+        audio: false
+      };
+
+      const mediaStream = await navigator.mediaDevices.getUserMedia(constraints as any);
       handleStream(mediaStream);
     } catch (err) {
-      console.warn("Arka kamera açılamadı, genel kamera izni deneniyor...", err);
+      console.warn("Kamera başlatma hatası:", err);
+      // Fallback
       try {
-        // Fallback: Herhangi bir video kaynağı
-        const fallbackStream = await navigator.mediaDevices.getUserMedia({ 
-          video: true,
-          audio: false
-        });
+        const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
         handleStream(fallbackStream);
       } catch (finalErr: any) {
-        console.error("Kamera hatası:", finalErr);
-        setPermissionError(true);
-        
-        let msg = "Kamera başlatılamadı.";
-        
-        if (finalErr.name === 'NotAllowedError' || finalErr.name === 'PermissionDeniedError') {
-            msg = "Kamera izni reddedildi.";
-            setPermissionDenied(true);
-        } else if (finalErr.name === 'NotFoundError') {
-            msg = "Kamera cihazı bulunamadı.";
-        } else if (finalErr.name === 'NotReadableError') {
-            msg = "Kamera donanımına erişilemiyor (başka bir uygulama kullanıyor olabilir).";
-        } else if (window.location.protocol === 'http:') {
-            msg = "Güvenlik nedeniyle HTTP üzerinden kamera açılamaz. Lütfen HTTPS kullanın.";
-        } else {
-            msg = `Hata detayı: ${finalErr.message || finalErr.name}`;
-        }
-        
-        setErrorMessage(msg);
-        setLoading(false);
+        handleCameraError(finalErr);
       }
+    }
+  };
+
+  const handleCameraError = (error: any) => {
+    setPermissionError(true);
+    setLoading(false);
+    
+    if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+        setPermissionDenied(true);
+        setErrorMessage("Kamera izni reddedildi.");
+    } else if (error.name === 'NotFoundError') {
+        setErrorMessage("Kamera cihazı bulunamadı.");
+    } else if (window.location.protocol === 'http:') {
+        setErrorMessage("Güvenlik nedeniyle HTTP üzerinden kamera açılamaz. Lütfen HTTPS kullanın.");
+    } else {
+        setErrorMessage(`Kamera hatası: ${error.message}`);
     }
   };
 
   const handleStream = (mediaStream: MediaStream) => {
     setStream(mediaStream);
-    setLoading(false); 
+    setLoading(false);
+    
+    // Video elementine bağla
+    if (videoRef.current) {
+        videoRef.current.srcObject = mediaStream;
+        videoRef.current.onloadedmetadata = () => {
+            videoRef.current?.play().catch(e => console.error("Play error:", e));
+            startScanning(); // Görüntü gelince taramaya başla
+        };
+    }
   };
 
-  // Stream ve Video Element Eşleşmesi
-  useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-      videoRef.current.play().catch(e => console.log("Otomatik oynatma hatası (önemsiz):", e));
+  const startScanning = async () => {
+    if (!('BarcodeDetector' in window)) return;
+    
+    // Desteklenen formatlar
+    const formats = await window.BarcodeDetector.getSupportedFormats();
+    const detector = new window.BarcodeDetector({ formats });
+
+    const detectLoop = async () => {
+        if (!videoRef.current || videoRef.current.paused || videoRef.current.ended) {
+            scanInterval.current = requestAnimationFrame(detectLoop);
+            return;
+        }
+
+        try {
+            const barcodes = await detector.detect(videoRef.current);
+            if (barcodes.length > 0) {
+                const code = barcodes[0].rawValue;
+                // Aynı kodu tekrar tekrar okumayı engelle (debounce)
+                if (code !== lastScanned) {
+                    handleSuccessScan(code);
+                }
+            }
+        } catch (e) {
+            // Hata olursa sessizce devam et
+        }
+        scanInterval.current = requestAnimationFrame(detectLoop);
+    };
+
+    scanInterval.current = requestAnimationFrame(detectLoop);
+  };
+
+  const handleSuccessScan = (code: string) => {
+    // Görsel Geri Bildirim
+    setLastScanned(code);
+    
+    // Sesli Geri Bildirim
+    playBeep();
+
+    // Titreşim (Mobil cihazlar için)
+    if (navigator.vibrate) {
+        navigator.vibrate(200);
     }
-  }, [stream, loading]);
 
-  // İlk yükleme
+    // İşlem
+    onScan(code);
+
+    // 2 saniye bekle (Debounce reset)
+    setTimeout(() => {
+        setLastScanned(null);
+    }, 2000);
+  };
+
+  // Feneri Aç/Kapa
+  const toggleTorch = () => {
+    if (!stream) return;
+    const track = stream.getVideoTracks()[0];
+    const capabilities = track.getCapabilities() as any;
+    
+    if (capabilities.torch) {
+        track.applyConstraints({
+            advanced: [{ torch: !torchEnabled }]
+        } as any).then(() => {
+            setTorchEnabled(!torchEnabled);
+        }).catch(e => console.log(e));
+    } else {
+        alert("Cihazınız fener özelliğini desteklemiyor.");
+    }
+  };
+
   useEffect(() => {
-    let mounted = true;
     startCamera();
-
     return () => {
-      mounted = false;
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
+      if (scanInterval.current) cancelAnimationFrame(scanInterval.current);
+      if (stream) stream.getTracks().forEach(track => track.stop());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Temizlik
-  useEffect(() => {
-    return () => {
-       if (stream) {
-           stream.getTracks().forEach(track => track.stop());
-       }
-    };
-  }, [stream]);
-
-
-  // Manuel Giriş İşlemleri
+  // Manuel Giriş
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (manualCode.trim()) {
-      processCode(manualCode.trim());
+      handleSuccessScan(manualCode.trim());
       setManualCode('');
     }
   };
 
-  const processCode = useCallback((code: string) => {
-    setLastScanned(code);
-    onScan(code);
-    setTimeout(() => setLastScanned(null), 2000);
-  }, [onScan]);
-
   const simulateScan = () => {
     const randomCode = Math.floor(10000000 + Math.random() * 90000000).toString();
-    processCode(randomCode);
+    handleSuccessScan(randomCode);
   };
 
   return (
     <div className="fixed inset-0 bg-black z-50 flex flex-col">
       {/* Üst Kontroller */}
       <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 bg-gradient-to-b from-black/80 to-transparent">
-        <div className="bg-black/40 backdrop-blur-sm px-3 py-1 rounded-full border border-white/10">
-          <span className="text-xs font-bold uppercase tracking-wider text-blue-400">
-            {mode === 'single' ? 'Tekli Okuma' : 'Seri / Stok'}
-          </span>
+        <div className="flex items-center gap-2">
+            <div className="bg-black/40 backdrop-blur-sm px-3 py-1 rounded-full border border-white/10">
+            <span className="text-xs font-bold uppercase tracking-wider text-blue-400">
+                {mode === 'single' ? 'Tekli' : 'Seri'}
+            </span>
+            </div>
+            {stream && (
+                <button onClick={toggleTorch} className="p-2 bg-black/40 rounded-full text-white border border-white/10">
+                    <Zap size={18} className={torchEnabled ? "text-yellow-400 fill-current" : "text-slate-400"} />
+                </button>
+            )}
         </div>
         <button onClick={onClose} className="p-2 bg-white/10 rounded-full text-white backdrop-blur-sm hover:bg-white/20 transition-colors">
           <X size={24} />
@@ -159,24 +251,38 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
               autoPlay 
               playsInline 
               muted 
-              className="absolute inset-0 w-full h-full object-cover opacity-80"
+              className="absolute inset-0 w-full h-full object-cover"
             />
             {/* Tarama Çerçevesi */}
-            <div className="relative z-10 w-72 h-48 border-2 border-blue-500/50 rounded-lg shadow-[0_0_0_9999px_rgba(0,0,0,0.7)]">
-               <div className="absolute top-0 left-0 right-0 h-0.5 bg-red-500 shadow-[0_0_10px_rgba(239,68,68,1)] animate-[scan_2s_ease-in-out_infinite]"></div>
-               <div className="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-blue-500 -mt-0.5 -ml-0.5"></div>
-               <div className="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-blue-500 -mt-0.5 -mr-0.5"></div>
-               <div className="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-blue-500 -mb-0.5 -ml-0.5"></div>
-               <div className="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-blue-500 -mb-0.5 -mr-0.5"></div>
+            <div className="relative z-10 w-72 h-48 border-2 border-blue-500/50 rounded-lg shadow-[0_0_0_9999px_rgba(0,0,0,0.7)] overflow-hidden">
+               <div className="absolute top-0 left-0 right-0 h-1 bg-red-500 shadow-[0_0_15px_rgba(239,68,68,1)] animate-[scan_2s_ease-in-out_infinite]"></div>
+               
+               {/* Köşe İşaretçileri */}
+               <div className="absolute top-0 left-0 w-6 h-6 border-t-4 border-l-4 border-blue-500"></div>
+               <div className="absolute top-0 right-0 w-6 h-6 border-t-4 border-r-4 border-blue-500"></div>
+               <div className="absolute bottom-0 left-0 w-6 h-6 border-b-4 border-l-4 border-blue-500"></div>
+               <div className="absolute bottom-0 right-0 w-6 h-6 border-b-4 border-r-4 border-blue-500"></div>
             </div>
             
-            <p className="relative z-10 mt-8 text-white/70 text-sm font-medium bg-black/50 px-4 py-1 rounded-full">
-              Barkodu çerçeve içine alın
-            </p>
+            <div className="relative z-10 mt-6 flex flex-col items-center gap-2">
+                <p className="text-white/90 text-sm font-medium bg-black/60 px-4 py-1.5 rounded-full backdrop-blur-sm">
+                Barkodu çerçeve içine alın
+                </p>
+                {!isSupported && (
+                    <p className="text-red-400 text-xs bg-red-900/80 px-3 py-1 rounded border border-red-500/50">
+                        Cihazınız otomatik taramayı desteklemiyor. Manuel giriniz.
+                    </p>
+                )}
+            </div>
 
             {lastScanned && (
-              <div className="absolute bottom-32 z-20 bg-green-500 text-white px-6 py-2 rounded-full font-bold shadow-lg animate-bounce">
-                Okundu: {lastScanned}
+              <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-30 flex flex-col items-center animate-bounce">
+                <div className="bg-green-500 text-white w-16 h-16 rounded-full flex items-center justify-center shadow-lg mb-2">
+                    <CheckCircle2 size={32} />
+                </div>
+                <div className="bg-white text-green-700 px-4 py-1 rounded-full font-bold shadow-lg">
+                    {lastScanned}
+                </div>
               </div>
             )}
           </>
@@ -185,63 +291,43 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
             {loading ? (
                <>
                  <Loader2 className="w-12 h-12 text-blue-500 animate-spin mb-4" />
-                 <p className="text-slate-400">Kamera başlatılıyor...</p>
-                 <p className="text-xs text-slate-600 mt-2">Lütfen bekleyin...</p>
+                 <p className="text-slate-400">Kamera ve Barkod Okuyucu Başlatılıyor...</p>
                </>
             ) : (
                 <>
                     <div className="w-16 h-16 bg-red-900/30 rounded-full flex items-center justify-center mb-4 text-red-500 border border-red-900 shrink-0">
                       <AlertTriangle size={32} />
                     </div>
-                    <h3 className="text-white font-bold text-lg mb-2">Kamera İzni Gerekli</h3>
+                    <h3 className="text-white font-bold text-lg mb-2">Erişim Sorunu</h3>
                     
                     {permissionDenied ? (
                         <div className="bg-slate-800/80 p-4 rounded-lg text-left text-sm text-slate-300 mb-6 border border-slate-700 w-full">
-                            <p className="mb-3 font-semibold text-white">İzin nasıl açılır?</p>
-                            
-                            <div className="flex items-start gap-3 mb-3">
-                                <Lock className="w-5 h-5 text-blue-400 mt-0.5" />
-                                <div>
-                                    <span className="text-white">Adım 1:</span> Adres çubuğundaki (URL) <span className="text-blue-400 font-bold">Kilit</span> veya <span className="text-blue-400 font-bold">Ayarlar</span> simgesine tıklayın.
-                                </div>
+                            <p className="mb-3 font-semibold text-white">1. Adres Çubuğuna Tıklayın</p>
+                            <div className="flex items-center gap-2 mb-2 text-xs">
+                                <Lock className="w-4 h-4 text-blue-400" /> Kilit simgesi veya Ayarlar
                             </div>
-                            
-                            <div className="flex items-start gap-3 mb-3">
-                                <Settings className="w-5 h-5 text-blue-400 mt-0.5" />
-                                <div>
-                                    <span className="text-white">Adım 2:</span> "İzinler" veya "Site Ayarları" kısmından <span className="text-green-400 font-bold">Kamera</span>'yı bulup "İzin Ver" (Allow) seçin.
-                                </div>
-                            </div>
-
-                            <div className="flex items-start gap-3">
-                                <Globe className="w-5 h-5 text-blue-400 mt-0.5" />
-                                <div>
-                                    <span className="text-white">Adım 3:</span> Sayfayı yenileyin veya "Tekrar Dene" butonuna basın.
-                                </div>
+                            <p className="mb-3 font-semibold text-white mt-4">2. İzinleri Açın</p>
+                            <div className="flex items-center gap-2 mb-2 text-xs">
+                                <Settings className="w-4 h-4 text-green-400" /> Kamera > İzin Ver (Allow)
                             </div>
                         </div>
                     ) : (
-                        <p className="text-slate-300 text-sm mb-6 leading-relaxed">
+                        <p className="text-slate-300 text-sm mb-6 leading-relaxed bg-red-900/20 p-3 rounded border border-red-900/50">
                           {errorMessage}
                         </p>
                     )}
 
-                    <div className="space-y-3 w-full">
-                      <Button onClick={() => window.location.reload()} variant="primary" fullWidth icon={<RefreshCcw size={18} />}>
-                          Sayfayı Yenile
-                      </Button>
-                      <Button onClick={onClose} variant="secondary" fullWidth>
-                          İptal
-                      </Button>
-                    </div>
+                    <Button onClick={() => window.location.reload()} variant="primary" fullWidth icon={<RefreshCcw size={18} />}>
+                        Yeniden Yükle
+                    </Button>
                 </>
             )}
           </div>
         )}
       </div>
 
-      {/* Alt Kontroller / Manuel Giriş */}
-      <div className="bg-slate-900 border-t border-slate-800 p-4 pb-8 safe-area-bottom">
+      {/* Alt Kontroller */}
+      <div className="bg-slate-900 border-t border-slate-800 p-4 safe-area-bottom">
         <form onSubmit={handleManualSubmit} className="flex gap-2">
            <div className="relative flex-1">
              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -251,32 +337,29 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
                type="text"
                value={manualCode}
                onChange={(e) => setManualCode(e.target.value)}
-               placeholder="Barkodu manuel girin..."
+               placeholder="Barkod yaz..."
                className="block w-full pl-10 pr-3 py-3 border border-slate-700 rounded-lg leading-5 bg-slate-800 text-slate-100 placeholder-slate-500 focus:outline-none focus:bg-slate-700 focus:border-blue-500 transition-colors"
-               autoFocus={false} 
+               inputMode="numeric"
              />
            </div>
-           <Button type="submit" variant="secondary" className="px-6">
+           <Button type="submit" variant="secondary" className="px-4 whitespace-nowrap">
              Ekle
            </Button>
         </form>
-        
-        <div className="mt-4 flex justify-center">
-             <button 
-               type="button" 
-               onClick={simulateScan}
-               className="text-xs text-slate-500 underline hover:text-blue-400"
-             >
-               (Test: Rastgele Barkod Oluştur)
-             </button>
-        </div>
+        <button 
+           type="button" 
+           onClick={simulateScan}
+           className="w-full mt-3 text-xs text-slate-600 hover:text-slate-400"
+         >
+           Test Modu: Rastgele Barkod Ekle
+         </button>
       </div>
 
       <style>{`
         @keyframes scan {
           0% { top: 0%; opacity: 0; }
-          10% { opacity: 1; }
-          90% { opacity: 1; }
+          25% { opacity: 1; }
+          75% { opacity: 1; }
           100% { top: 100%; opacity: 0; }
         }
       `}</style>

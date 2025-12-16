@@ -1,5 +1,5 @@
 {
-  "name": "Leeboard Barcode",
+  "name": "BarkodLink Pro",
   "description": "Ağ yolu yapılandırması, tekli ve seri tarama modları ve çevrimdışı depolama özelliklerine sahip profesyonel bir barkod tarama aracı.",
   "requestFramePermissions": [
     "camera",
