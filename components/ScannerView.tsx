@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Camera, X, Zap, Loader2, Barcode, RefreshCcw } from 'lucide-react';
+import { Camera, X, Zap, Loader2, Barcode, RefreshCcw, AlertTriangle } from 'lucide-react';
 import { Button } from './Button';
 import { ScanMode } from '../types';
 
@@ -18,46 +18,59 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
   const [lastScanned, setLastScanned] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Kamerayı başlatma fonksiyonu
   const startCamera = async () => {
     setLoading(true);
     setPermissionError(false);
     setErrorMessage('');
 
+    // Güvenli bağlam kontrolü (HTTPS veya localhost)
+    if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+       console.warn("Güvenli olmayan bağlam (HTTP) tespit edildi. Kamera çalışmayabilir.");
+    }
+
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setPermissionError(true);
-      setErrorMessage("Tarayıcı kamera erişimini desteklemiyor (HTTPS gerekli olabilir).");
+      setErrorMessage("Tarayıcınız kamera erişimini desteklemiyor veya güvenli olmayan bir bağlantı (HTTP) kullanıyorsunuz. Lütfen HTTPS kullanın.");
       setLoading(false);
       return;
     }
 
     try {
-      // Sadece video iste, ses (audio) false yaparak izin sürecini kolaylaştır
+      // Önce arka kamerayı dene
       const mediaStream = await navigator.mediaDevices.getUserMedia({ 
         video: { facingMode: 'environment' },
         audio: false 
       });
       handleStream(mediaStream);
     } catch (err) {
-      console.warn("Arka kamera açılamadı, herhangi bir kamera deneniyor...", err);
+      console.warn("Arka kamera açılamadı, genel kamera izni deneniyor...", err);
       try {
-        // Hata verirse herhangi bir video kaynağını dene
+        // Fallback: Herhangi bir video kaynağı
         const fallbackStream = await navigator.mediaDevices.getUserMedia({ 
           video: true,
           audio: false
         });
         handleStream(fallbackStream);
       } catch (finalErr: any) {
-        console.error("Kamera erişimi reddedildi:", finalErr);
+        console.error("Kamera hatası:", finalErr);
         setPermissionError(true);
+        
+        let msg = "Kamera başlatılamadı.";
+        
         if (finalErr.name === 'NotAllowedError' || finalErr.name === 'PermissionDeniedError') {
-            setErrorMessage("Kamera izni reddedildi. Lütfen tarayıcı ayarlarından siteye kamera izni verin.");
+            msg = "Kamera izni reddedildi. Lütfen tarayıcı ayarlarından izin verin.";
         } else if (finalErr.name === 'NotFoundError') {
-            setErrorMessage("Kamera bulunamadı.");
+            msg = "Kamera cihazı bulunamadı.";
         } else if (finalErr.name === 'NotReadableError') {
-            setErrorMessage("Kamera şu anda başka bir uygulama tarafından kullanılıyor olabilir.");
+            msg = "Kamera donanımına erişilemiyor (başka bir uygulama kullanıyor olabilir).";
+        } else if (window.location.protocol === 'http:') {
+            msg = "Güvenlik nedeniyle HTTP üzerinden kamera açılamaz. Lütfen HTTPS kullanın.";
         } else {
-            setErrorMessage("Kamera başlatılamadı: " + (finalErr.message || "Bilinmeyen hata"));
+            msg = `Hata detayı: ${finalErr.message || finalErr.name}`;
         }
+        
+        setErrorMessage(msg);
         setLoading(false);
       }
     }
@@ -65,12 +78,20 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
 
   const handleStream = (mediaStream: MediaStream) => {
     setStream(mediaStream);
-    if (videoRef.current) {
-      videoRef.current.srcObject = mediaStream;
-    }
-    setLoading(false);
+    setLoading(false); 
+    // Not: videoRef.current burada null olabilir çünkü loading true iken video render edilmiyor.
+    // Stream ataması useEffect içinde yapılacak.
   };
 
+  // Stream ve Video Element Eşleşmesi
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+      videoRef.current.play().catch(e => console.log("Otomatik oynatma hatası (önemsiz):", e));
+    }
+  }, [stream, loading]);
+
+  // İlk yükleme
   useEffect(() => {
     let mounted = true;
     startCamera();
@@ -84,7 +105,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Temizlik yaparken stream'i durdur (useEffect dışında güncellemeler için)
+  // Temizlik
   useEffect(() => {
     return () => {
        if (stream) {
@@ -94,7 +115,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
   }, [stream]);
 
 
-  // Handle Manual Entry
+  // Manuel Giriş İşlemleri
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (manualCode.trim()) {
@@ -116,7 +137,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
 
   return (
     <div className="fixed inset-0 bg-black z-50 flex flex-col">
-      {/* Top Controls */}
+      {/* Üst Kontroller */}
       <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 bg-gradient-to-b from-black/80 to-transparent">
         <div className="bg-black/40 backdrop-blur-sm px-3 py-1 rounded-full border border-white/10">
           <span className="text-xs font-bold uppercase tracking-wider text-blue-400">
@@ -128,7 +149,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
         </button>
       </div>
 
-      {/* Camera Viewport */}
+      {/* Kamera Alanı */}
       <div className="flex-1 relative flex flex-col items-center justify-center overflow-hidden bg-slate-900">
         {!permissionError && !loading ? (
           <>
@@ -139,7 +160,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
               muted 
               className="absolute inset-0 w-full h-full object-cover opacity-80"
             />
-            {/* Scanner Overlay UI */}
+            {/* Tarama Çerçevesi */}
             <div className="relative z-10 w-72 h-48 border-2 border-blue-500/50 rounded-lg shadow-[0_0_0_9999px_rgba(0,0,0,0.7)]">
                <div className="absolute top-0 left-0 right-0 h-0.5 bg-red-500 shadow-[0_0_10px_rgba(239,68,68,1)] animate-[scan_2s_ease-in-out_infinite]"></div>
                <div className="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-blue-500 -mt-0.5 -ml-0.5"></div>
@@ -159,31 +180,37 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
             )}
           </>
         ) : (
-          <div className="flex flex-col items-center p-6 text-center max-w-sm">
+          <div className="flex flex-col items-center p-6 text-center max-w-sm px-8">
             {loading ? (
                <>
                  <Loader2 className="w-12 h-12 text-blue-500 animate-spin mb-4" />
                  <p className="text-slate-400">Kamera başlatılıyor...</p>
+                 <p className="text-xs text-slate-600 mt-2">Lütfen bekleyin...</p>
                </>
             ) : (
                 <>
                     <div className="w-16 h-16 bg-red-900/30 rounded-full flex items-center justify-center mb-4 text-red-500 border border-red-900">
-                    <Camera size={32} />
+                      <AlertTriangle size={32} />
                     </div>
-                    <h3 className="text-white font-bold text-lg mb-2">Kamera Erişimi Gerekli</h3>
-                    <p className="text-slate-400 text-sm mb-6">
-                    {errorMessage || "Kameraya erişilemedi. Lütfen izinleri kontrol edin."}
+                    <h3 className="text-white font-bold text-lg mb-2">Kamera Hatası</h3>
+                    <p className="text-slate-300 text-sm mb-6 leading-relaxed">
+                      {errorMessage}
                     </p>
-                    <Button onClick={() => startCamera()} variant="primary" icon={<RefreshCcw size={18} />}>
-                        Tekrar Dene
-                    </Button>
+                    <div className="space-y-3 w-full">
+                      <Button onClick={() => startCamera()} variant="primary" fullWidth icon={<RefreshCcw size={18} />}>
+                          Tekrar Dene
+                      </Button>
+                      <Button onClick={onClose} variant="secondary" fullWidth>
+                          İptal
+                      </Button>
+                    </div>
                 </>
             )}
           </div>
         )}
       </div>
 
-      {/* Bottom Controls / Manual Entry */}
+      {/* Alt Kontroller / Manuel Giriş */}
       <div className="bg-slate-900 border-t border-slate-800 p-4 pb-8 safe-area-bottom">
         <form onSubmit={handleManualSubmit} className="flex gap-2">
            <div className="relative flex-1">
@@ -196,7 +223,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ mode, onScan, onClose 
                onChange={(e) => setManualCode(e.target.value)}
                placeholder="Barkodu manuel girin..."
                className="block w-full pl-10 pr-3 py-3 border border-slate-700 rounded-lg leading-5 bg-slate-800 text-slate-100 placeholder-slate-500 focus:outline-none focus:bg-slate-700 focus:border-blue-500 transition-colors"
-               autoFocus
+               autoFocus={false} // Mobilde klavye otomatik açılmasın diye false yaptım
              />
            </div>
            <Button type="submit" variant="secondary" className="px-6">
